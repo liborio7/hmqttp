@@ -1,78 +1,44 @@
 package main
 
 import (
-    "github.com/go-chi/chi"
-    "github.com/go-chi/chi/middleware"
-    "github.com/go-chi/render"
-    "hmqttp/clients"
-    "hmqttp/handlers"
-    "log"
-    "net/http"
+	"context"
+	"fmt"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
+	"hmqttp/httpcli"
+	"hmqttp/iot"
+	"hmqttp/mqttcli"
+	"os"
+	"time"
 )
 
-
 func main() {
-    _ = clients.GetMqttClient().Connect()
+	output := zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339}
+	output.PartsOrder = []string{"time", "level", "rid", "caller", "message"}
+	output.FormatMessage = func(i interface{}) string {
+		return fmt.Sprintf("%s >", i)
+	}
+	log.Logger = zerolog.New(output).With().Timestamp().Caller().Logger()
 
-    r := chi.NewRouter()
-    r.Use(middleware.RequestID)
-    r.Use(middleware.Logger)
-    r.Use(middleware.Recoverer)
-    r.Use(middleware.URLFormat)
-    r.Use(render.SetContentType(render.ContentTypeJSON))
+	ctx := context.Background()
+	logger := log.With().Str("rid", "main").Logger()
+	ctx = logger.WithContext(ctx)
 
-    r.Get("/health", handlers.GetHealthHandler().Get)
-    r.Get("/iot", handlers.GetIotHandler().Get)
+	mqtt := mqttcli.NewClient(ctx, &mqttcli.ClientOpt{
+		Address: "tcp://localhost:1883",
+		Id:      "hmqttp_client",
+	})
+	_ = mqtt.Connect()
+	ticker := time.NewTicker(5 * time.Second)
+	go func() {
+		for range ticker.C {
+			if !mqtt.IsConnected() {
+				_ = mqtt.Connect()
+			}
+		}
+	}()
 
-    if err := http.ListenAndServe(":3000", r); err != nil {
-        log.Println("error during router server startup:", err)
-        panic("application stopped")
-    }
+	http := httpcli.NewClient(ctx)
+	http.Mount("/iot", iot.NewHandler(mqtt))
+	http.ListenAndServe(":3000")
 }
-
-/*
-func main() {
-    // mqtt client
-    opts := mqtt.NewClientOptions().AddBroker("tcp://localhost:1883")
-    opts.SetClientID("go_client_id")
-    //opts.SetUsername("")
-    //opts.SetPassword("")
-    opts.SetAutoReconnect(true)
-    opts.SetOnConnectHandler(func(client mqtt.Client) {
-        log.Println("mqtt connection is up")
-    })
-    opts.SetConnectionLostHandler(func(client mqtt.Client, err error) {
-        log.Println("mqtt connection lost", err)
-    })
-
-    client := mqtt.NewClient(opts)
-    token := client.Connect()
-    token.WaitTimeout(3 * time.Second)
-    if err := token.Error(); err != nil {
-        log.Println("error during mqtt client startup:", err)
-        panic("application stopped")
-    }
-
-    // http server
-    r := chi.NewRouter()
-    r.Use(middleware.RequestID)
-    r.Use(middleware.Logger)
-    r.Use(middleware.Recoverer)
-    r.Use(middleware.URLFormat)
-    r.Use(render.SetContentType(render.ContentTypeJSON))
-
-    r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
-        render.JSON(w, r, "check")
-    })
-    r.Get("/iot", func(w http.ResponseWriter, r *http.Request) {
-        client.Publish("/go_topic", 2, false, "go_hello")
-        render.NoContent(w, r)
-    })
-
-    // start
-    if err := http.ListenAndServe(":3000", r); err != nil {
-        log.Println("error during router server startup:", err)
-        panic("application stopped")
-    }
-}
-*/
